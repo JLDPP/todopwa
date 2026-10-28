@@ -1,9 +1,7 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
-  "headers": [
-    {
-      "source": "/sw.js",
-      "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
-    }
-  ]
+"version": 2,
+"builds": [{ "src": "api/index.js", "use": "@vercel/node" }],
+  "routes": [{ "src": "/(.*)", "dest": "/api/index.js" }]
 }
+
+  

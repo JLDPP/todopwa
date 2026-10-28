@@ -1,3 +1,4 @@
+
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
@@ -7,35 +8,66 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      // Escribimos nuestro propio service worker (src/sw.ts) para poder manejar
-      // notificaciones push. Workbox solo inyecta la lista de archivos a precachear.
+      // Service worker personalizado para manejar
+      // notificaciones push y sincronización offline.
       strategies: "injectManifest",
       srcDir: "src",
       filename: "sw.ts",
-      // "prompt": cuando hay versión nueva mostramos un aviso (PwaUpdater.tsx)
+
+      // Mostrar aviso cuando exista una nueva versión.
       registerType: "prompt",
+
       injectManifest: {
-        globPatterns: ["**/*.{js,css,html,png,svg,ico,webmanifest}"],
-        globIgnores: ["**/screenshots/**"], // no precachear capturas pesadas
+        globPatterns: [
+          "**/*.{js,css,html,png,svg,ico,webmanifest}",
+        ],
+
+        // No almacenar capturas pesadas en precaché.
+        globIgnores: [
+          "**/screenshots/**",
+        ],
+
+        // Aumentar límite de 2 MiB a 5 MiB.
+        // Permite incluir el logo de 2.36 MB.
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },
+
       manifest: {
         id: "/",
         name: "To-Do PWA",
         short_name: "To-Do",
-        description: "Organiza tus tareas, con o sin conexión, y recibe recordatorios.",
+        description:
+          "Organiza tus tareas, con o sin conexión, y recibe recordatorios.",
+
         lang: "es-MX",
         start_url: "/dashboard",
         scope: "/",
         display: "standalone",
-        // Igual al fondo de la app: evita el destello blanco al abrirla instalada
+
         background_color: "#121a2e",
         theme_color: "#121a2e",
+
         icons: [
-          { src: "/icons/icon192.png", sizes: "192x192", type: "image/png" },
-          { src: "/icons/icon512.png", sizes: "512x512", type: "image/png" },
-          // Recomendado: genera un ícono "maskable" en https://maskable.app y descomenta:
-          // { src: "/icons/maskable512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+          {
+            src: "/icons/icon192.png",
+            sizes: "192x192",
+            type: "image/png",
+          },
+          {
+            src: "/icons/icon512.png",
+            sizes: "512x512",
+            type: "image/png",
+          },
+
+          // Ícono maskable opcional:
+          // {
+          //   src: "/icons/maskable512.png",
+          //   sizes: "512x512",
+          //   type: "image/png",
+          //   purpose: "maskable",
+          // },
         ],
+
         screenshots: [
           {
             src: "/screenshots/captura.png",
@@ -44,13 +76,12 @@ export default defineConfig({
             form_factor: "wide",
             label: "Lista de tareas en escritorio",
           },
-          // Agrega una captura vertical (p. ej. 720x1280) con form_factor "narrow"
-          // para que Android muestre el diálogo de instalación enriquecido.
         ],
       },
+
       devOptions: {
         enabled: true,
-        type: "module", // necesario con injectManifest en desarrollo
+        type: "module",
         navigateFallback: "index.html",
       },
     }),

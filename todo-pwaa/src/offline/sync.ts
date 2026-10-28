@@ -1,262 +1,193 @@
+// src/offline/sync.ts
+// Envía la outbox al servidor.
+// Patrón "outbox": la UI nunca llama directamente a la API
+// para modificar datos; solo encola operaciones.
 
+import axios from "axios";
 import { api } from "../api";
+import { getOutbox, removeOp, setMapping } from "./db";
 
-import {
-  getOutbox,
-  removeOutbox,
-  setMapping,
-  getMapping,
-  removeTaskLocal,
-  promoteLocalToServer,
-  getAllTasksLocal,
-  putTaskLocal,
-  type OutboxOp,
-} from "./db";
+let running: Promise<boolean> | null = null;
+let again = false;
 
-// Evita sincronizaciones simultáneas
-let syncing: Promise<void> | null = null;
-
-async function performSync(): Promise<void> {
-  if (!navigator.onLine) return;
-
-  const ops = (await getOutbox()).sort(
-    (a, b) => a.ts - b.ts
-  );
-
-  if (!ops.length) return;
-
-  // Agrupar operaciones por tarea
-  const groups = new Map<string, OutboxOp[]>();
-
-  for (const op of ops) {
-    const id = op.clienteId ?? op.serverId;
-
-    if (!id) continue;
-
-    if (!groups.has(id)) {
-      groups.set(id, []);
-    }
-
-    groups.get(id)!.push(op);
+/**
+ * Sincroniza la outbox.
+ * Si ya existe una sincronización en curso,
+ * programa otra ejecución al finalizar.
+ *
+ * Devuelve true si la outbox queda vacía.
+ */
+export function syncNow(): Promise<boolean> {
+  if (running) {
+    again = true;
+    return running;
   }
 
-  // Procesar cada tarea
-  for (const [id, taskOps] of groups) {
+  running = (async () => {
     try {
-      const createOp = taskOps.find(
-        (op) => op.op === "create"
+      let ok = true;
+
+      do {
+        again = false;
+        ok = await runOnce();
+      } while (
+        again &&
+        ok &&
+        navigator.onLine
       );
 
-      const deleteOp = taskOps.find(
-        (op) => op.op === "delete"
-      );
-
-      const updates = taskOps.filter(
-        (op) => op.op === "update"
-      );
-
-      // Combinar los cambios pendientes
-      const changes: Record<string, any> = {};
-
-      for (const op of updates) {
-        if (op.op === "update") {
-          Object.assign(changes, op.data);
-        }
-      }
-
-      const mappedId = await getMapping(id);
-
-      let serverId =
-        taskOps.find((op) => op.serverId)?.serverId ??
-        mappedId;
-
-      if (createOp && deleteOp && !serverId) {
-        await removeTaskLocal(id);
-
-        for (const op of taskOps) {
-          await removeOutbox(op.id);
-        }
-
-        continue;
-      }
-
-
-      if (createOp?.op === "create" && !serverId) {
-        const payload = {
-          ...createOp.data,
-          ...changes,
-          clienteId: createOp.clienteId,
-          description:
-            changes.description ??
-            createOp.data.description ??
-            "",
-          status:
-            changes.status ??
-            createOp.data.status ??
-            "Pendiente",
-        };
-
-        const { data } = await api.post(
-          "/tasks/bulksync",
-          {
-            tasks: [payload],
-          }
-        );
-
-        const mapping = data?.mapping?.find(
-          (m: any) =>
-            m.clienteId === createOp.clienteId
-        );
-
-        if (!mapping?.serverId) {
-          throw new Error(
-            "No se recibió el ID de MongoDB"
-          );
-        }
-
-        serverId = mapping.serverId;
-
-        // Guardar mapeo antes de continuar.
-        // Así evitamos duplicaciones al reintentar.
-        await setMapping(
-          createOp.clienteId,
-          serverId
-        );
-      }
-
-      
-
-      if (deleteOp) {
-        if (!serverId) {
-          throw new Error(
-            "No se encontró el ID para eliminar"
-          );
-        }
-
-        await api.delete(`/tasks/${serverId}`);
-
-        await removeTaskLocal(id);
-        await removeTaskLocal(serverId);
-
-        // Limpiar únicamente operaciones exitosas
-        for (const op of taskOps) {
-          await removeOutbox(op.id);
-        }
-
-        continue;
-      }
-
-      
-
-      if (!serverId) {
-        throw new Error(
-          "No se encontró el ID de la tarea"
-        );
-      }
-
-      if (createOp?.op === "create") {
-        // Garantiza el estado final de una tarea
-        // creada y modificada sin conexión.
-        await api.put(`/tasks/${serverId}`, {
-          title:
-            changes.title ?? createOp.data.title,
-          description:
-            changes.description ??
-            createOp.data.description ??
-            "",
-          status:
-            changes.status ??
-            createOp.data.status ??
-            "Pendiente",
-        });
-
-        await promoteLocalToServer(
-          createOp.clienteId,
-          serverId
-        );
-      } else if (updates.length > 0) {
-        // Actualizar tarea existente
-        await api.put(
-          `/tasks/${serverId}`,
-          changes
-        );
-      }
-
-      
-
-      const localTasks = await getAllTasksLocal();
-
-      const local = localTasks.find(
-        (t: any) =>
-          t._id === id ||
-          t._id === serverId
-      );
-
-      if (local) {
-        // Quitar antiguo registro local,
-        // evitando duplicados.
-        if (id !== serverId) {
-          await removeTaskLocal(id);
-        }
-
-        await putTaskLocal({
-          ...local,
-          ...changes,
-          _id: serverId,
-          pending: false,
-        });
-      }
-
-      
-
-      for (const op of taskOps) {
-        await removeOutbox(op.id);
-      }
-
-      console.log(
-        `Tarea ${serverId} sincronizada correctamente`
-      );
-    } catch (error) {
-      console.error(
-        `Error sincronizando tarea ${id}:`,
-        error
-      );
-
-      // No eliminamos la cola si falla.
-      // Se reintentará en otra sincronización.
+      return ok;
+    } finally {
+      running = null;
     }
-  }
+  })();
+
+  return running;
 }
 
+/**
+ * Determina si un error HTTP es permanente.
+ *
+ * Los errores 401, 408 y 429 no se consideran
+ * permanentes porque pueden resolverse después.
+ */
+function isPermanent(error: unknown): boolean {
+  if (
+    !axios.isAxiosError(error) ||
+    !error.response
+  ) {
+    return false;
+  }
 
-export function syncNow(): Promise<void> {
+  const status = error.response.status;
+
+  return (
+    status >= 400 &&
+    status < 500 &&
+    ![401, 408, 429].includes(status)
+  );
+}
+
+/**
+ * Ejecuta una sincronización de la outbox.
+ */
+async function runOnce(): Promise<boolean> {
+  // Comprobar conexión a internet
   if (!navigator.onLine) {
-    return Promise.resolve();
+    return false;
   }
 
-  // Si ya se está sincronizando,
-  // esperar a la misma ejecución.
-  if (syncing) return syncing;
+  // Obtener operaciones pendientes
+  const ops = await getOutbox();
 
-  const run = performSync().finally(() => {
-    syncing = null;
-  });
+  if (ops.length === 0) {
+    return true;
+  }
 
-  syncing = run;
+  try {
+    /**
+     * PASO 1:
+     * Sincronizar todas las tareas nuevas.
+     */
 
-  return run;
-}
+    const creates = ops.filter(
+      (
+        op
+      ): op is Extract<
+        (typeof ops)[number],
+        { op: "create" }
+      > => op.op === "create"
+    );
 
+    if (creates.length > 0) {
+      const { data } = await api.post<{
+        mapping: {
+          clienteId: string;
+          serverId: string;
+        }[];
+      }>(
+        "/tasks/bulksync",
+        {
+          tasks: creates.map((op) => ({
+            ...op.data,
+            clienteId: op.clienteId,
+          })),
+        }
+      );
 
+      // Guardar IDs asignados por el servidor
+      for (const mapping of data.mapping ?? []) {
+        await setMapping(
+          mapping.clienteId,
+          mapping.serverId
+        );
+      }
 
-export function setupOnlineSync() {
-  const handler = () => {
-    void syncNow();
-  };
+      // Eliminar operaciones sincronizadas
+      for (const op of creates) {
+        await removeOp(op);
+      }
+    }
 
-  window.addEventListener("online", handler);
+    /**
+     * PASO 2:
+     * Procesar actualizaciones y eliminaciones.
+     */
 
-  return () => {
-    window.removeEventListener("online", handler);
-  };
+    for (const op of ops) {
+      // Las creaciones ya fueron procesadas
+      if (op.op === "create") {
+        continue;
+      }
+
+      try {
+        switch (op.op) {
+          case "update": {
+            await api.put(
+              `/tasks/${op.serverId}`,
+              op.data
+            );
+
+            await removeOp(op);
+            break;
+          }
+
+          case "delete": {
+            await api.delete(
+              `/tasks/${op.serverId}`
+            );
+
+            await removeOp(op);
+            break;
+          }
+
+          default:
+            break;
+        }
+      } catch (error: unknown) {
+        if (isPermanent(error)) {
+          // Descartar operaciones rechazadas
+          // permanentemente por el servidor
+          await removeOp(op);
+        } else {
+          // Detener ante errores temporales
+          // para reintentar más adelante
+          throw error;
+        }
+      }
+    }
+
+    
+
+    const pendingOps = await getOutbox();
+
+    return pendingOps.length === 0;
+  } catch (error: unknown) {
+    console.error(
+      "Error al sincronizar la outbox:",
+      error
+    );
+
+    return false;
+  }
 }
