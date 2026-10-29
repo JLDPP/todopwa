@@ -11,7 +11,7 @@ export function pushEnabled() {
   configured = Boolean(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
   if (configured) {
     // Apple rechaza subjects falsos: usa un mailto: real o la URL de tu sitio.
-    webpush.setVapidDetails(VAPID_SUBJECT || "mailto:admin@example.com", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+    webpush.setVapidDetails(VAPID_SUBJECT || "mailto:2123100514@soy.utj.edu.mx", VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
   }
   return configured;
 }
